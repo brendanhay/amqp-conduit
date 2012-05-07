@@ -75,7 +75,7 @@ close res conn = do
 
 connect :: URI -> ExchangeOpts -> QueueOpts -> IO AMQPConn
 connect uri exchange queue = do
-    conn <- openConn uri
+    conn <- openConnection' uri
     chan <- openChannel conn
     declareQueue chan queue
     declareExchange chan exchange
@@ -87,8 +87,8 @@ connect uri exchange queue = do
 disconnect :: AMQPConn -> IO ()
 disconnect = closeConnection . amqpConn
 
-openConn :: URI -> IO Connection
-openConn uri =
+openConnection' :: URI -> IO Connection
+openConnection' uri =
     openConnection host vhost user password
   where
     vhost = uriPath uri
