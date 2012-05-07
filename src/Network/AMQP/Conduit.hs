@@ -1,14 +1,15 @@
 module Network.AMQP.Conduit (
     -- * Sources, Sinks, and Conduits
-      amqpSink
+      amqpConduit
+    , amqpSink
 
     -- * Text.URI re-exports
     , URI
     , parseURI
 
     -- * Network.AMQP re-exports
-    , ExchangeOpts
-    , QueueOpts
+    , ExchangeOpts(..)
+    , QueueOpts(..)
     , newExchange
     , newQueue
     ) where
@@ -30,16 +31,43 @@ data AMQPConn = AMQPConn
     , amqpExchange :: QueueOpts
     }
 
+amqpConduit :: MonadResource m
+            => URI
+            -> ExchangeOpts
+            -> QueueOpts
+            -> Conduit BS.ByteString m BS.ByteString
+amqpConduit uri exchange queue =
+    conduitIO
+    (connect uri exchange queue)
+    disconnect
+    (\conn bstr -> push (IOProducing [bstr]) conn bstr)
+    (close [])
+
 amqpSink :: MonadResource m
          => URI
          -> ExchangeOpts
          -> QueueOpts
          -> Sink BS.ByteString m ()
 amqpSink uri exchange queue =
-    sinkIO (connect uri exchange queue) disconnect push close
-  where
-    push conn bstr = liftIO $ publish conn bstr >> return IOProcessing
-    close _ = return ()
+    sinkIO
+    (connect uri exchange queue)
+    disconnect
+    (push IOProcessing)
+    (close ())
+
+--
+-- Conduit Helpers
+--
+
+push :: MonadResource m => b -> AMQPConn -> BS.ByteString -> m b
+push res conn bstr = do
+    liftIO $ publish conn bstr
+    return res
+
+close :: MonadResource m => a -> AMQPConn -> m a
+close res conn = do
+    liftIO $ disconnect conn
+    return res
 
 --
 -- Internal
@@ -47,14 +75,11 @@ amqpSink uri exchange queue =
 
 connect :: URI -> ExchangeOpts -> QueueOpts -> IO AMQPConn
 connect uri exchange queue = do
-    conn <- open uri
+    conn <- openConn uri
     chan <- openChannel conn
-
     declareQueue chan queue
     declareExchange chan exchange
-
     bindQueue chan (exchangeName exchange) key key
-
     return $ AMQPConn conn chan exchange queue
   where
     key = queueName queue
@@ -62,17 +87,17 @@ connect uri exchange queue = do
 disconnect :: AMQPConn -> IO ()
 disconnect = closeConnection . amqpConn
 
-publish :: AMQPConn -> BS.ByteString -> IO ()
-publish (AMQPConn _ chan exchange queue) payload =
-    publishMsg chan (exchangeName exchange) (queueName queue) message
-  where
-    message = newMsg { msgBody = BL.fromChunks [payload] }
-
-open :: URI -> IO Connection
-open uri =
+openConn :: URI -> IO Connection
+openConn uri =
     openConnection host vhost user password
   where
     vhost = uriPath uri
     host  = fromMaybe "127.0.0.1" $ uriRegName uri
     auth  = fromMaybe "guest:guest" $ uriUserInfo uri
     [user, password] = splitOn ":" auth
+
+publish :: AMQPConn -> BS.ByteString -> IO ()
+publish (AMQPConn _ chan exchange queue) payload =
+    publishMsg chan (exchangeName exchange) (queueName queue) message
+  where
+    message = newMsg { msgBody = BL.fromChunks [payload] }
